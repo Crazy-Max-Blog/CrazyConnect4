@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connect 4 Online (MQTT)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        #game-container {
+            background-color: #2980b9;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+        #board {
+            display: grid;
+            grid-template-columns: repeat(7, 60px);
+            grid-template-rows: repeat(6, 60px);
+            gap: 8px;
+        }
+        .cell {
+            width: 60px;
+            height: 60px;
+            background-color: white;
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+        }
+        .cell::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 0;
+            width: 100%;
+            height: 8px;
+            background-color: #2980b9;
+            border-radius: 4px 4px 0 0;
+        }
+        .cell.red {
+            background-color: #e74c3c;
+        }
+        .cell.yellow {
+            background-color: #f1c40f;
+        }
+        #status {
+            margin: 10px 0;
+            font-size: 24px;
+            font-weight: bold;
+            min-height: 30px;
+        }
+        #connection-status {
+            margin: 5px 0;
+            font-size: 16px;
+            color: #666;
+        }
+        #controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 100%;
+            max-width: 440px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #27ae60;
+        }
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        input {
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 200px;
+        }
+        .winning-cell {
+            box-shadow: 0 0 10px 5px rgba(255, 255, 255, 0.8);
+        }
+        #game-id-display {
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        #share-link {
+            display: none;
+            margin-top: 10px;
+        }
+        #share-link input {
+            width: 300px;
+            margin-right: 10px;
+        }
+        .tooltip {
+            position: relative;
+            display: inline-block;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 120px;
+            background-color: #555;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 5px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -60px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        .share-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .share-btn {
+            padding: 8px 15px;
+            font-size: 14px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .telegram-btn {
+            background-color: #0088cc;
+            color: white;
+            border: none;
+        }
+        .native-share-btn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+        }
+        .share-btn i {
+            font-style: normal;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+</head>
+<body>
+    <h1>Connect 4 Online</h1>
+    <div id="connection-status">Disconnected</div>
+    <div id="game-id-display"></div>
+    <div id="game-container">
+        <div id="board"></div>
+    </div>
+    <div id="status">Loading game...</div>
+    <div id="controls">
+        <div class="control-group">
+            <input type="text" id="game-id-input" placeholder="Enter Game ID">
+            <button id="join-game">Join Game</button>
+        </div>
+        <div class="control-group">
+            <button id="create-game">Create New Game</button>
+        </div>
+        <div id="share-link" class="control-group">
+            <input type="text" id="game-link" readonly>
+            <button id="copy-link" class="tooltip">Copy Link
+                <span class="tooltiptext">Copied!</span>
+            </button>
+        </div>
+        <div class="share-buttons">
+            <button id="telegram-share" class="share-btn telegram-btn" title="Share via Telegram">
+                <i class="fab fa-telegram"></i> Telegram
+            </button>
+            <button id="native-share" class="share-btn native-share-btn" title="Share via...">
+                <i class="fas fa-share-alt"></i> Share
+            </button>
+        </div>
+        <button id="reset-game" disabled>Reset Game</button>
+    </div>
+
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script>
+        // Game constants
+        const ROWS = 6;
+        const COLS = 7;
+        const PLAYER_COLORS = ['red', 'yellow'];
+        
+        // Game state
+        let board = Array(ROWS).fill().map(() => Array(COLS).fill(null));
+        let currentPlayer = 0;
+        let gameOver = false;
+        let playerNumber = null;
+        let gameId = null;
+        let client = null;
+        
+        // MQTT configuration
+        const MQTT_CONFIG = {
+            broker: 'wss://test.mosquitto.org:8081',
+            options: {
+                keepalive: 30,
+                clientId: 'connect4_' + Math.random().toString(16).substr(2, 8),
+                clean: true,
+                reconnectPeriod: 5000,
+                connectTimeout: 30 * 1000
+            }
+        };
+        
+        // DOM elements
+        const boardElement = document.getElementById('board');
+        const statusElement = document.getElementById('status');
+        const connectionStatusElement = document.getElementById('connection-status');
+        const gameIdDisplayElement = document.getElementById('game-id-display');
+        const gameIdInputElement = document.getElementById('game-id-input');
+        const joinGameButton = document.getElementById('join-game');
+        const createGameButton = document.getElementById('create-game');
+        const resetGameButton = document.getElementById('reset-game');
+        const shareLinkDiv = document.getElementById('share-link');
+        const gameLinkInput = document.getElementById('game-link');
+        const copyLinkButton = document.getElementById('copy-link');
+        const tooltip = document.querySelector('.tooltiptext');
+        const telegramShareBtn = document.getElementById('telegram-share');
+        const nativeShareBtn = document.getElementById('native-share');
+
+        // Get game ID from URL parameters
+        function getGameIdFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('gameId');
+        }
+
+        // Update URL with game ID
+        function updateUrlWithGameId(id) {
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('gameId', id);
+            window.history.pushState({}, '', newUrl);
+            gameLinkInput.value = newUrl.href;
+        }
+
+        // Copy game link to clipboard
+        function copyGameLink() {
+            gameLinkInput.select();
+            document.execCommand('copy');
+            
+            // Show tooltip
+            tooltip.style.visibility = 'visible';
+            tooltip.style.opacity = '1';
+            setTimeout(() => {
+                tooltip.style.visibility = 'hidden';
+                tooltip.style.opacity = '0';
+            }, 2000);
+        }
+
+        // Share to Telegram
+        function shareToTelegram() {
+            const url = `https://t.me/share/url?url=${encodeURIComponent(window.location.href)}&text=Join%20my%20Connect%204%20game!`;
+            window.open(url, '_blank', 'width=550,height=420');
+        }
+
+        // Native share
+        function nativeShare() {
+            if (navigator.share) {
+                navigator.share({
+                    title: 'Connect 4 Game',
+                    text: 'Join my Connect 4 game!',
+                    url: window.location.href
+                }).catch(err => {
+                    console.log('Error sharing:', err);
+                });
+            } else {
+                alert('Web Share API not supported in your browser. You can copy the link instead.');
+            }
+        }
+
+        // Initialize MQTT connection
+        function connectToMqtt() {
+            connectionStatusElement.textContent = "Connecting to MQTT server...";
+            
+            try {
+                client = mqtt.connect(MQTT_CONFIG.broker, MQTT_CONFIG.options);
+                
+                client.on('connect', function() {
+                    connectionStatusElement.textContent = "Connected to MQTT server";
+                    statusElement.textContent = "Create or join a game";
+                    console.log("Connected to MQTT broker");
+
+                    // Check if we have gameId in URL for auto-join
+                    const urlGameId = getGameIdFromUrl();
+                    if (urlGameId) {
+                        gameIdInputElement.value = urlGameId;
+                        joinExistingGame();
+                    }
+                });
+                
+                client.on('error', function(err) {
+                    connectionStatusElement.textContent = "Connection error: " + err.message;
+                    console.error("Connection error:", err);
+                });
+                
+                client.on('close', function() {
+                    connectionStatusElement.textContent = "Disconnected";
+                    console.log("Disconnected from MQTT broker");
+                });
+                
+                client.on('reconnect', function() {
+                    connectionStatusElement.textContent = "Reconnecting...";
+                    console.log("Reconnecting to MQTT broker");
+                });
+                
+                client.on('message', function(topic, message) {
+                    console.log("Message received:", topic, message.toString());
+                    try {
+                        const payload = JSON.parse(message.toString());
+                        
+                        if (topic.endsWith('/start')) {
+                            handleGameStart(payload);
+                        } else if (topic.endsWith('/move')) {
+                            handleMove(payload);
+                        } else if (topic.endsWith('/reset')) {
+                            handleReset(payload);
+                        }
+                    } catch (e) {
+                        console.error("Error processing message:", e);
+                    }
+                });
+                
+            } catch (err) {
+                connectionStatusElement.textContent = "Connection failed: " + err.message;
+                console.error("Connection failed:", err);
+            }
+        }
+
+        // Game creation and joining
+        function createNewGame() {
+            gameId = `connect4_${Math.random().toString(36).substr(2, 8)}`;
+            playerNumber = 0;
+            
+            subscribeToGameTopics();
+            publishStartMessage();
+            
+            gameIdDisplayElement.textContent = `Game ID: ${gameId}`;
+            statusElement.textContent = "Waiting for player 2 to join...";
+            
+            disableGameControls();
+            resetGameButton.disabled = false;
+            
+            // Update URL and show share link
+            updateUrlWithGameId(gameId);
+            shareLinkDiv.style.display = 'flex';
+            
+            console.log("Game created with ID:", gameId);
+            resetGame();
+        }
+
+        function joinExistingGame() {
+            gameId = gameIdInputElement.value.trim();
+            if (!gameId) {
+                alert("Please enter a valid Game ID");
+                return;
+            }
+            
+            playerNumber = 1;
+            
+            subscribeToGameTopics();
+            publishStartMessage();
+            
+            gameIdDisplayElement.textContent = `Game ID: ${gameId}`;
+            statusElement.textContent = "Game joined! Waiting for your turn...";
+            
+            disableGameControls();
+            
+            // Update URL
+            updateUrlWithGameId(gameId);
+            
+            console.log("Joined game with ID:", gameId);
+        }
+
+        function subscribeToGameTopics() {
+            const topics = [
+                `${gameId}/start`,
+                `${gameId}/move`,
+                `${gameId}/reset`
+            ];
+            
+            topics.forEach(topic => {
+                client.subscribe(topic, { qos: 1 }, function(err) {
+                    if (err) {
+                        console.error("Subscription error:", err);
+                    } else {
+                        console.log("Subscribed to topic:", topic);
+                    }
+                });
+            });
+        }
+
+        function publishStartMessage() {
+            const message = JSON.stringify({
+                player: playerNumber,
+                timestamp: Date.now()
+            });
+            
+            client.publish(`${gameId}/start`, message, { qos: 1 }, function(err) {
+                if (err) {
+                    console.error("Publish error:", err);
+                } else {
+                    console.log("Start message published");
+                }
+            });
+        }
+
+        // Game logic
+        function handleGameStart(payload) {
+            if (payload.player !== playerNumber) {
+                const otherPlayer = payload.player === 0 ? 1 : 0;
+                statusElement.textContent = `Player ${otherPlayer + 1} joined! ${playerNumber === 0 ? "You go first!" : "Waiting for opponent's move..."}`;
+                
+                if (playerNumber === 0) {
+                    resetGame();
+                }
+                
+                console.log(`Player ${payload.player + 1} joined the game`);
+            }
+        }
+
+        function handleMove(payload) {
+            if (payload.player === playerNumber) return;
+            
+            console.log(`Player ${payload.player + 1} made move in column ${payload.col}`);
+            
+            const { col } = payload;
+            makeMove(col, false);
+        }
+
+        function handleReset(payload) {
+            if (payload.player === playerNumber) return;
+            
+            console.log(`Player ${payload.player + 1} reset the game`);
+            
+            resetGame();
+            statusElement.textContent = `Game reset! ${playerNumber === 0 ? "You go first!" : "Waiting for opponent's move..."}`;
+        }
+
+        function makeMove(col, isLocalMove = true) {
+            if (gameOver) return;
+            if (isLocalMove && currentPlayer !== playerNumber) return;
+            
+            // Find the first empty row in the column (from bottom)
+            for (let row = ROWS - 1; row >= 0; row--) {
+                if (board[row][col] === null) {
+                    board[row][col] = currentPlayer;
+                    updateBoard();
+                    
+                    if (isLocalMove) {
+                        // Send move to opponent
+                        const message = JSON.stringify({
+                            player: playerNumber,
+                            col: col,
+                            timestamp: Date.now()
+                        });
+                        
+                        client.publish(`${gameId}/move`, message, { qos: 1 }, function(err) {
+                            if (err) {
+                                console.error("Publish error:", err);
+                            } else {
+                                console.log(`Move published to column ${col}`);
+                            }
+                        });
+                    }
+                    
+                    if (checkWin(row, col)) {
+                        const winner = currentPlayer + 1;
+                        statusElement.textContent = isLocalMove 
+                            ? `You win! Player ${winner} wins!` 
+                            : `Player ${winner} wins!`;
+                        highlightWinningCells(row, col);
+                        gameOver = true;
+                        return;
+                    }
+                    
+                    if (checkDraw()) {
+                        statusElement.textContent = "It's a draw!";
+                        gameOver = true;
+                        return;
+                    }
+                    
+                    currentPlayer = (currentPlayer + 1) % 2;
+                    
+                    if (isLocalMove) {
+                        statusElement.textContent = "Waiting for opponent's move...";
+                    } else {
+                        statusElement.textContent = "Your turn!";
+                    }
+                    
+                    return;
+                }
+            }
+        }
+
+        function checkWin(row, col) {
+            return checkDirection(row, col, 1, 0) || // vertical
+                   checkDirection(row, col, 0, 1) || // horizontal
+                   checkDirection(row, col, 1, 1) || // diagonal /
+                   checkDirection(row, col, 1, -1);  // diagonal \
+        }
+
+        function checkDirection(row, col, deltaRow, deltaCol) {
+            const player = board[row][col];
+            let count = 1;
+
+            // Check in positive direction
+            let r = row + deltaRow;
+            let c = col + deltaCol;
+            while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+                count++;
+                r += deltaRow;
+                c += deltaCol;
+            }
+
+            // Check in negative direction
+            r = row - deltaRow;
+            c = col - deltaCol;
+            while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+                count++;
+                r -= deltaRow;
+                c -= deltaCol;
+            }
+
+            return count >= 4;
+        }
+
+        function highlightWinningCells(row, col) {
+            const winningCells = getWinningCells(row, col);
+            if (!winningCells) return;
+            
+            winningCells.forEach(([r, c]) => {
+                const cell = document.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+                cell.classList.add('winning-cell');
+            });
+        }
+
+        function getWinningCells(row, col) {
+            const player = board[row][col];
+            
+            const directions = [
+                [1, 0],  // vertical
+                [0, 1],   // horizontal
+                [1, 1],   // diagonal /
+                [1, -1]   // diagonal \
+            ];
+            
+            for (const [dr, dc] of directions) {
+                const cells = [[row, col]];
+                
+                // Check positive direction
+                let r = row + dr;
+                let c = col + dc;
+                while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+                    cells.push([r, c]);
+                    r += dr;
+                    c += dc;
+                }
+                
+                // Check negative direction
+                r = row - dr;
+                c = col - dc;
+                while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+                    cells.push([r, c]);
+                    r -= dr;
+                    c -= dc;
+                }
+                
+                if (cells.length >= 4) {
+                    return cells.slice(0, 4);
+                }
+            }
+            
+            return null;
+        }
+
+        function checkDraw() {
+            return board.every(row => row.every(cell => cell !== null));
+        }
+
+        function resetGame() {
+            board = Array(ROWS).fill().map(() => Array(COLS).fill(null));
+            currentPlayer = 0;
+            gameOver = false;
+            
+            if (playerNumber === 0) {
+                resetGameButton.disabled = false;
+            } else {
+                resetGameButton.disabled = true;
+            }
+            
+            updateBoard();
+        }
+
+        function publishReset() {
+            const message = JSON.stringify({
+                player: playerNumber,
+                timestamp: Date.now()
+            });
+            
+            client.publish(`${gameId}/reset`, message, { qos: 1 }, function(err) {
+                if (err) {
+                    console.error("Publish error:", err);
+                } else {
+                    console.log("Reset message published");
+                }
+            });
+        }
+
+        // UI updates
+        function updateBoard() {
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach(cell => {
+                const row = parseInt(cell.dataset.row);
+                const col = parseInt(cell.dataset.col);
+                cell.className = 'cell';
+                if (board[row][col] !== null) {
+                    cell.classList.add(PLAYER_COLORS[board[row][col]]);
+                }
+                cell.classList.remove('winning-cell');
+            });
+        }
+
+        function createBoard() {
+            boardElement.innerHTML = '';
+            for (let row = 0; row < ROWS; row++) {
+                for (let col = 0; col < COLS; col++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.dataset.row = row;
+                    cell.dataset.col = col;
+                    cell.addEventListener('click', () => {
+                        if (!gameOver && currentPlayer === playerNumber) {
+                            makeMove(col);
+                        }
+                    });
+                    boardElement.appendChild(cell);
+                }
+            }
+        }
+
+        function disableGameControls() {
+            createGameButton.disabled = true;
+            joinGameButton.disabled = true;
+            gameIdInputElement.disabled = true;
+        }
+
+        // Initialize game
+        function initGame() {
+            createBoard();
+            
+            // Hide native share button if not supported
+            if (!navigator.share) {
+                document.getElementById('native-share').style.display = 'none';
+            }
+            
+            if (typeof mqtt !== 'undefined') {
+                connectToMqtt();
+            } else {
+                statusElement.textContent = "Error: MQTT library failed to load";
+                console.error("MQTT.js is not available");
+            }
+        }
+
+        // Event listeners
+        joinGameButton.addEventListener('click', joinExistingGame);
+        createGameButton.addEventListener('click', createNewGame);
+        resetGameButton.addEventListener('click', () => {
+            publishReset();
+            resetGame();
+            statusElement.textContent = playerNumber === 0 ? "Your turn!" : "Waiting for opponent's move...";
+        });
+        copyLinkButton.addEventListener('click', copyGameLink);
+        telegramShareBtn.addEventListener('click', shareToTelegram);
+        nativeShareBtn.addEventListener('click', nativeShare);
+
+        // Start the game when page loads
+        window.addEventListener('DOMContentLoaded', initGame);
+    </script>
+</body>
+</html>
